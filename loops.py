@@ -1,31 +1,25 @@
 import asyncio
 import time
+import traceback
 from fetcher import fetch_all
 from validator import validate_list
 from pool import pool
 
-FETCH_INTERVAL_SECONDS   = 15 * 60   # Loop A: fetch + validate new proxies every 15 min
-RECHECK_INTERVAL_SECONDS =  5 * 60   # Loop B: re-check live pool every 5 min
+FETCH_INTERVAL_SECONDS   = 15 * 60   # Loop A: every 15 min
+RECHECK_INTERVAL_SECONDS =  5 * 60   # Loop B: every 5 min
 
 
-# ── LOOP A: Continuously fetch new proxies and validate them ─────────────────
 async def fetch_and_validate_loop():
-    """
-    Runs 24/7. Every 15 minutes:
-      1. Pulls fresh raw proxies from all sources
-      2. Validates every one concurrently
-      3. Adds only live proxies to the pool
-      4. Never adds duplicates (pool is a set)
-    """
     while True:
         try:
             cycle_start = time.time()
-            print(f"\n[LOOP A] ── Fetch cycle starting ──────────────────────")
+            print(f"\n[LOOP A] ── Fetch cycle starting ──────────────────────", flush=True)
 
             raw = await fetch_all()
+            print(f"[LOOP A] Raw proxies fetched: {len(raw)}", flush=True)
 
             if raw:
-                print(f"[LOOP A] Validating {len(raw)} proxies...")
+                print(f"[LOOP A] Validating {len(raw)} proxies...", flush=True)
                 live, dead = await validate_list(raw)
                 added = pool.add_many(live)
                 pool.last_fetch_time = time.time()
@@ -34,36 +28,29 @@ async def fetch_and_validate_loop():
                 elapsed = round(time.time() - cycle_start, 1)
                 print(f"[LOOP A] ✓ Done in {elapsed}s — "
                       f"{len(live)} live / {len(raw)} tested / "
-                      f"{added} new added / pool={len(pool.proxies)}")
+                      f"{added} new added / pool={len(pool.proxies)}", flush=True)
             else:
-                print("[LOOP A] No proxies fetched — all sources failed")
+                print("[LOOP A] ⚠ No proxies fetched — all sources failed or blocked", flush=True)
 
         except Exception as e:
-            print(f"[LOOP A] ERROR: {e}")
+            print(f"[LOOP A] ❌ ERROR: {e}", flush=True)
+            traceback.print_exc()
 
-        print(f"[LOOP A] Sleeping {FETCH_INTERVAL_SECONDS // 60} minutes...\n")
+        print(f"[LOOP A] Sleeping {FETCH_INTERVAL_SECONDS // 60} minutes...\n", flush=True)
         await asyncio.sleep(FETCH_INTERVAL_SECONDS)
 
 
-# ── LOOP B: Re-check existing pool every 5 minutes ──────────────────────────
 async def recheck_pool_loop():
-    """
-    Runs 24/7. Every 5 minutes:
-      1. Takes a snapshot of all proxies currently in the pool
-      2. Re-validates every single one
-      3. Immediately evicts any that are now dead
-      4. Logs how many were removed
-    """
     while True:
-        await asyncio.sleep(RECHECK_INTERVAL_SECONDS)  # wait first, pool needs time to populate
+        await asyncio.sleep(RECHECK_INTERVAL_SECONDS)
 
         try:
             snapshot = pool.snapshot()
             if not snapshot:
-                print("[LOOP B] Pool empty — skipping recheck")
+                print("[LOOP B] Pool empty — skipping recheck", flush=True)
                 continue
 
-            print(f"\n[LOOP B] ── Recheck cycle starting — {len(snapshot)} proxies ──")
+            print(f"\n[LOOP B] ── Recheck cycle — {len(snapshot)} proxies ──", flush=True)
             cycle_start = time.time()
 
             live, dead = await validate_list(snapshot)
@@ -77,9 +64,10 @@ async def recheck_pool_loop():
             elapsed = round(time.time() - cycle_start, 1)
             print(f"[LOOP B] ✓ Done in {elapsed}s — "
                   f"{len(live)} still live / {len(dead)} evicted / "
-                  f"pool={len(pool.proxies)}")
+                  f"pool={len(pool.proxies)}", flush=True)
 
         except Exception as e:
-            print(f"[LOOP B] ERROR: {e}")
+            print(f"[LOOP B] ❌ ERROR: {e}", flush=True)
+            traceback.print_exc()
 
-        print(f"[LOOP B] Sleeping {RECHECK_INTERVAL_SECONDS // 60} minutes...\n")
+        print(f"[LOOP B] Sleeping {RECHECK_INTERVAL_SECONDS // 60} minutes...\n", flush=True)

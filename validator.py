@@ -1,41 +1,67 @@
 import httpx
 import asyncio
+import random
 
-# Multiple fallback test URLs — tries each one, proxy is live if ANY succeeds
+# Multiple lightweight test targets - plain HTTP, no HTTPS needed
 TEST_URLS = [
-    "http://ip-api.com/json",        # Very reliable, returns JSON with IP info
-    "http://checkip.amazonaws.com",  # AWS, almost always up
-    "http://ifconfig.me/ip",         # Simple IP echo
-    "http://api.ipify.org",          # Reliable IP echo
+    "http://ip-api.com/json",
+    "http://checkip.amazonaws.com",
+    "http://api.ipify.org",
+    "http://ifconfig.me/ip",
+    "http://icanhazip.com",
+    "http://ipecho.net/plain",
 ]
 
-TIMEOUT        = 8.0    # Increased from 5s — gives slow proxies a chance
-MAX_CONCURRENT = 80     # Reduced slightly — Railway free plan safer at 80
+TIMEOUT        = 10.0   # generous timeout
+MAX_CONCURRENT = 50     # conservative — Railway free tier
+
 
 async def check(proxy: str, semaphore: asyncio.Semaphore) -> tuple[str, bool]:
     async with semaphore:
-        for url in TEST_URLS:
-            try:
-                async with httpx.AsyncClient(
-                    proxies={"http://": proxy, "https://": proxy},
-                    timeout=TIMEOUT,
-                    follow_redirects=True
-                ) as client:
-                    r = await client.get(url)
-                    if r.status_code == 200:
-                        return proxy, True
-            except:
-                continue  # Try next URL before giving up
+        # Pick a random test URL to spread load
+        url = random.choice(TEST_URLS)
+        try:
+            async with httpx.AsyncClient(
+                proxies={"http://": proxy, "https://": proxy},
+                timeout=httpx.Timeout(TIMEOUT),
+                follow_redirects=True,
+                verify=False,  # Don't fail on SSL issues
+            ) as client:
+                r = await client.get(url)
+                # Accept any 2xx response — we just need the proxy to route
+                if 200 <= r.status_code < 300 and len(r.text.strip()) > 0:
+                    return proxy, True
+        except Exception:
+            pass
         return proxy, False
 
 
 async def validate_list(proxies: list) -> tuple[list, list]:
     """
-    Returns (live_list, dead_list)
-    Validates the full list with MAX_CONCURRENT parallel workers
+    Returns (live_list, dead_list).
+    Splits into batches of 200 to avoid overwhelming Railway's network.
     """
+    if not proxies:
+        return [], []
+
     sem = asyncio.Semaphore(MAX_CONCURRENT)
-    results = await asyncio.gather(*[check(p, sem) for p in proxies])
-    live = [p for p, ok in results if ok]
-    dead = [p for p, ok in results if not ok]
+    live = []
+    dead = []
+
+    # Process in batches of 200
+    batch_size = 200
+    total = len(proxies)
+    for i in range(0, total, batch_size):
+        batch = proxies[i:i + batch_size]
+        print(f"  [validator] Batch {i // batch_size + 1}/{(total + batch_size - 1) // batch_size} "
+              f"— checking {len(batch)} proxies...", flush=True)
+        results = await asyncio.gather(*[check(p, sem) for p in batch])
+        batch_live = [p for p, ok in results if ok]
+        batch_dead = [p for p, ok in results if not ok]
+        live.extend(batch_live)
+        dead.extend(batch_dead)
+        print(f"  [validator] Batch done — {len(batch_live)} live / {len(batch_dead)} dead", flush=True)
+        # Small pause between batches
+        await asyncio.sleep(1)
+
     return live, dead
